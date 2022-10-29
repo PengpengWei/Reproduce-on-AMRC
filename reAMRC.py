@@ -365,7 +365,8 @@ class reAMRC:
         if deterministic:
             y_hat = int(np.argmax(class_rule))
         else:
-            y_hat = int(np.where(np.random.multinomial(1, class_rule.reshape(1,-1)[0]) == 1)[0])
+            # y_hat = int(np.where(np.random.multinomial(1, class_rule.reshape(1,-1)[0]) == 1)[0])
+            y_hat = np.random.choice(self.n_class, p=class_rule.flatten())
 
         return y_hat
 
