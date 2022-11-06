@@ -3,11 +3,13 @@ from sklearn.preprocessing import MinMaxScaler
 import itertools
 import numpy as np
 import scipy.io
+import time
 import typing
 
 
 class reAMRC:
-    def __init__(self, X, Y, order=0, W=200, alpha=0.3, N=100, K=2000, feature_map="linear", D=200, gamma=0.15625) -> None:
+    def __init__(self, X, Y, order=0, W=200, alpha=0.3, N=100, K=2000, 
+                 feature_map="linear", D=200, gamma=0.15625, rndseed=round(time.time())) -> None:
         """
         Initializer: generate an AMRC with given dataset and hyperparameters. Note that the parameter "deterministic" is removed here. You may obtain the randomized result by calling randomized predictor.
 
@@ -38,6 +40,9 @@ class reAMRC:
         :D: (Hyper-feature) number of random Fourier components. 200 by defult
 
         :gamma: (Hyper-feature) scaling factor of RFF features. 2**(-6) by default
+
+
+        :rndseed: assign a fixed random seed if a reproducible experiment is required. This rndseed is independent of that of synthetic dataset generator. If using both, it is better not to have two ranges of random seed overlap (to avoid potential unexpected dependencies). 
 
         Output:
         ---
@@ -75,6 +80,11 @@ class reAMRC:
         ###################################################
         # Other necessary members for the algorithm:
         self.t = 0 # The index of the data to learn.
+        self.rndseed = rndseed
+        np.random.seed(rndseed)
+        # Initialize the predictor h in the paper. (Not the same as the method self.predict())
+        self.predictor = np.random.rand(self.n_class, 1)
+        self.predictor = self.predictor / self.predictor.sum().item()
 
 
         ###################################################
@@ -139,6 +149,7 @@ class reAMRC:
         self.mistakes_idx_rnd = np.zeros((self.n_sample - 1, 1)) # mistakes_idx[t, 0] = 1 means a wrong prediction at time t.
         self.mistakes_rnd = 0 # number of the mistakes in total.
         self.RUt = np.zeros((self.n_sample,1)) # RUt is the estimated regret of the uncertainty set. Used for calc performance bound.
+        self.Rht = np.zeros((self.n_sample,1)) # Rht is the exact error probability (for randomized AMRC only). It will be updated in _update_predictor when self.t does not exceed self.n_sample 
         self.varphi = 0 # the most recent \varphi{\mu_t} obtained from the learning algorithm (so that you won't need to re-calc via mu.)
 
         return
@@ -303,7 +314,8 @@ class reAMRC:
         self.RUt[self.t] = R_Ut_best_value
         # Move the index to the next data to learn
         self.t += 1
-
+        # Update the predictor:
+        self._predictor_update()
         return
     
     def next_instance_label(self):
@@ -323,6 +335,40 @@ class reAMRC:
     def next_label(self):
         return int(self.Y[self.t,0])
 
+    def _predictor_update(self):
+        """
+        Update the predictor. It should be called by self.fit(). Do not call it elsewhere. 
+        """
+        # A flag for Rht update. As we mentioned in the definition of self.Rht, we update Rht only if the current self.t does not exceed n_sample.
+        update_Rht = False
+        x = None
+        
+        if self.t < self.n_sample:
+            update_Rht = True
+            x = self.X[self.t, :]
+        else:
+            x = self.X[self.n_sample-1, :]
+        
+        class_rule = np.ones((self.n_class, 1)) # the classifier itself, which is a distri over all possible classes.
+
+        potential_feature_vec = np.zeros((self.n_class, self.m)) # each row corresponding to feature map of (x, possible y) 
+        for class_no in range(self.n_class):
+            potential_feature_vec[class_no, :] = self.feature_vector(x, class_no).T
+        # Calculate c_y and c_x terms: where c_y is the terms inside the summation of c_x in algo 2.
+        c_y = potential_feature_vec @ self.mu - self.varphi
+        c_y[c_y < 0] = 0
+        c_x = c_y.sum()
+        # Calculate the classification rule
+        if c_x == 0:
+            class_rule = np.ones((self.n_class, 1)) / self.n_class
+        else:
+            class_rule = c_y / c_x
+
+        self.predictor = class_rule
+
+        if update_Rht:
+            self.Rht[self.t] = 1 - self.predictor[self.Y[self.t].item()]
+        return
 
     def predict(self, x=None, deterministic=True):
         """
@@ -339,7 +385,6 @@ class reAMRC:
         :y_hat: the predicted y, which is an integer ranging from 0 to n_class-1.
 
         """
-
         if x == None:
             if self.t < self.n_sample:
                 x = self.X[self.t, :]
@@ -347,31 +392,17 @@ class reAMRC:
                 x = self.X[self.n_sample-1, :]
         
         x = x.reshape(1, -1) # form x into a row vector, but it does not matter indeed.
-        class_rule = np.ones((self.n_class, 1)) # the classifier itself, which is a distri over all possible classes.
-
-        potential_feature_vec = np.zeros((self.n_class, self.m)) # each row corresponding to feature map of (x, possible y) 
-        for class_no in range(self.n_class):
-            potential_feature_vec[class_no, :] = self.feature_vector(x, class_no).T
-        # Calculate c_y and c_x terms: where c_y is the terms inside the summation of c_x in algo 2.
-        c_y = potential_feature_vec @ self.mu - self.varphi
-        c_y[c_y < 0] = 0
-        c_x = c_y.sum()
-        # Calculate the classification rule
-        if c_x == 0:
-            class_rule = np.ones((self.n_class, 1)) / self.n_class
-        else:
-            class_rule = c_y / c_x
 
         if deterministic:
-            y_hat = int(np.argmax(class_rule))
+            y_hat = int(np.argmax(self.predictor))
         else:
             # y_hat = int(np.where(np.random.multinomial(1, class_rule.reshape(1,-1)[0]) == 1)[0])
-            y_hat = np.random.choice(self.n_class, p=class_rule.flatten())
+            y_hat = np.random.choice(self.n_class, p=self.predictor.flatten())
 
         return y_hat
 
     def savemat(self, filename):
-        mdict = {'mistakes_idx_det': self.mistakes_idx_det, 'mistakes_det': self.mistakes_det, 'mistakes_idx_rnd': self.mistakes_idx_rnd, 'mistakes_rnd': self.mistakes_rnd, 'RUt': self.RUt}
+        mdict = {'mistakes_idx_det': self.mistakes_idx_det, 'mistakes_det': self.mistakes_det, 'mistakes_idx_rnd': self.mistakes_idx_rnd, 'mistakes_rnd': self.mistakes_rnd, 'RUt': self.RUt, 'Rht': self.Rht, 'rndseed': self.rndseed}
         scipy.io.savemat(filename, mdict)
 
 
@@ -401,12 +432,12 @@ def train_and_predict(AMRC_obj: reAMRC) -> None:
 if __name__ == "__main__":
     print("hello world!")
     filename = "usenet1"
-    X, Y = data_reader(filename + ".mat")
+    X, Y = data_reader("./data/" + filename + ".mat")
     myAMRC = reAMRC(X, Y, feature_map="RFF", order=1)
     x = X[0,:]
     y = Y[0,:]
     # fvec = myAMRC.feature_vector(x,y)
     train_and_predict(myAMRC)
     print("Mistake rate: det={}, rand={}".format(myAMRC.mistakes_det / (myAMRC.n_sample-1), myAMRC.mistakes_rnd / (myAMRC.n_sample-1)))
-    myAMRC.savemat(filename + "_result.mat")
+    myAMRC.savemat("./results/" + filename + "_" + str(myAMRC.rndseed) + ".mat")
     print("Pause")
