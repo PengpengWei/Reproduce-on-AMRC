@@ -4,8 +4,8 @@ import typing
 import time
 from reAMRC import reAMRC
 
-def sinGen(n_sample: int=10000, mean: float=0.0, sigma: float=2.0, omega: float=0.1, bern: float=0.5, 
-            filename: str=None, rndseed: int=round(time.time())):
+def sinGen(n_sample: int=150, mean: float=0.0, sigma: float=2.0, omega: float=0.1, bern: float=0.5, 
+            filename: str=None, rndseed=None):
     """
     Generate a synthetic dataset as described in Section 6 in the paper. Save the data to `filename` if given.
 
@@ -44,19 +44,25 @@ def sinGen(n_sample: int=10000, mean: float=0.0, sigma: float=2.0, omega: float=
     Output file: if `filename` != None, X, Y would be saved to filename
 
     """
-    np.random.seed(rndseed)
-    epsilon = np.random.randn(2, )
+    if rndseed != None:
+        np.random.seed(rndseed)
+    # epsilon = np.random.randn(2, )
+    epsilon = mean + sigma * np.random.randn(n_sample, 2)
     Y = (np.random.rand(n_sample,1) > bern).astype('int64')
 
     t = np.arange(start=1, stop=n_sample+1, step=1).reshape(-1,1)
     inside_sin = np.pi * ((np.cos(omega * t) - 3) / 2 + (Y + 1))
-    X = np.hstack([4 * np.cos(inside_sin) + epsilon[0].item(), 4 * np.sin(inside_sin) + epsilon[1].item()])
+    X = np.hstack([4 * np.cos(inside_sin) , 4 * np.sin(inside_sin)]) + epsilon
 
     if filename:
-        mdict = {'X': X, 'Y': Y, 'rndseed': rndseed}
+        mdict = {'X': X, 'Y': Y}
+        if rndseed != None:
+            mdict['rndseed'] = rndseed
         scipy.io.savemat(filename, mdict)
     return X, Y
 
 if __name__ == '__main__':
-    sinGen()
-    # sinGen(filename='test')
+    # sinGen()
+    for i in range(1,201):
+        sinGen(filename='./temp/test' + str(i) + '.mat')
+    # sinGen(filename='test.mat')

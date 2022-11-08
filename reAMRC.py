@@ -9,7 +9,7 @@ import typing
 
 class reAMRC:
     def __init__(self, X, Y, order=0, W=200, alpha=0.3, N=100, K=2000, 
-                 feature_map="linear", D=200, gamma=0.15625, rndseed=round(time.time())) -> None:
+                 feature_map="linear", D=200, gamma=0.15625, normalized=True, rndseed=round(time.time())) -> None:
         """
         Initializer: generate an AMRC with given dataset and hyperparameters. Note that the parameter "deterministic" is removed here. You may obtain the randomized result by calling randomized predictor.
 
@@ -56,8 +56,9 @@ class reAMRC:
         self.Y = Y.astype("int64").reshape(-1, 1)
         self.n_class = len(np.unique(self.Y))
         # Normalize data
-        scaler = MinMaxScaler()
-        self.X = scaler.fit_transform(self.X)
+        if normalized:
+            scaler = MinMaxScaler()
+            self.X = scaler.fit_transform(self.X)
 
         # Hyperparameter-dynamic
         self.order = order
@@ -144,9 +145,9 @@ class reAMRC:
 
         ###################################################
         # For log purpose: Only useful when strictly following the original version of code.
-        self.mistakes_idx_det = np.zeros((self.n_sample - 1, 1)) # mistakes_idx[t, 0] = 1 means a wrong prediction at time t.
+        self.mistakes_idx_det = np.zeros((self.n_sample, 1)) # mistakes_idx[t, 0] = 1 means a wrong prediction at time t.
         self.mistakes_det = 0 # number of the mistakes in total.
-        self.mistakes_idx_rnd = np.zeros((self.n_sample - 1, 1)) # mistakes_idx[t, 0] = 1 means a wrong prediction at time t.
+        self.mistakes_idx_rnd = np.zeros((self.n_sample, 1)) # mistakes_idx[t, 0] = 1 means a wrong prediction at time t.
         self.mistakes_rnd = 0 # number of the mistakes in total.
         self.RUt = np.zeros((self.n_sample,1)) # RUt is the estimated regret of the uncertainty set. Used for calc performance bound.
         self.Rht = np.zeros((self.n_sample,1)) # Rht is the exact error probability (for randomized AMRC only). It will be updated in _update_predictor when self.t does not exceed self.n_sample 
@@ -312,10 +313,11 @@ class reAMRC:
                 ""
         # Record RUt:
         self.RUt[self.t] = R_Ut_best_value
+        # self.RUt[self.t] = R_Ut
         # Move the index to the next data to learn
         self.t += 1
         # Update the predictor:
-        self._predictor_update()
+        # self._predictor_update()
         return
     
     def next_instance_label(self):
@@ -335,10 +337,11 @@ class reAMRC:
     def next_label(self):
         return int(self.Y[self.t,0])
 
+    """
     def _predictor_update(self):
-        """
+        '''
         Update the predictor. It should be called by self.fit(). Do not call it elsewhere. 
-        """
+        '''
         # A flag for Rht update. As we mentioned in the definition of self.Rht, we update Rht only if the current self.t does not exceed n_sample.
         update_Rht = False
         x = None
@@ -369,6 +372,7 @@ class reAMRC:
         if update_Rht:
             self.Rht[self.t] = 1 - self.predictor[self.Y[self.t].item()]
         return
+    """
 
     def predict(self, x=None, deterministic=True):
         """
@@ -385,19 +389,43 @@ class reAMRC:
         :y_hat: the predicted y, which is an integer ranging from 0 to n_class-1.
 
         """
+        # Find the classifier:
+        update_Rht = False
         if x == None:
             if self.t < self.n_sample:
+                update_Rht = True
                 x = self.X[self.t, :]
             else:
                 x = self.X[self.n_sample-1, :]
         
         x = x.reshape(1, -1) # form x into a row vector, but it does not matter indeed.
+        class_rule = np.ones((self.n_class, 1)) # the classifier itself, which is a distri over all possible classes.
+
+        potential_feature_vec = np.zeros((self.n_class, self.m)) # each row corresponding to feature map of (x, possible y) 
+        for class_no in range(self.n_class):
+            potential_feature_vec[class_no, :] = self.feature_vector(x, class_no).T
+        # Calculate c_y and c_x terms: where c_y is the terms inside the summation of c_x in algo 2.
+        c_y = potential_feature_vec @ self.mu - self.varphi
+        c_y[c_y < 0] = 0
+        c_x = c_y.sum()
+        # Calculate the classification rule
+        if c_x == 0:
+            class_rule = np.ones((self.n_class, 1)) / self.n_class
+        else:
+            class_rule = c_y / c_x
+
+        if update_Rht:
+            self.predictor = class_rule
+            self.Rht[self.t] = 1 - self.predictor[self.Y[self.t].item()]
+
+
+        #####
 
         if deterministic:
-            y_hat = int(np.argmax(self.predictor))
+            y_hat = int(np.argmax(class_rule))
         else:
             # y_hat = int(np.where(np.random.multinomial(1, class_rule.reshape(1,-1)[0]) == 1)[0])
-            y_hat = np.random.choice(self.n_class, p=self.predictor.flatten())
+            y_hat = np.random.choice(self.n_class, p=class_rule.flatten())
 
         return y_hat
 
@@ -420,10 +448,10 @@ def train_and_predict(AMRC_obj: reAMRC) -> None:
         AMRC_obj.fit()
         # print(AMRC_obj.varphi)
         if AMRC_obj.next_label() != AMRC_obj.predict(deterministic=True):
-            AMRC_obj.mistakes_idx_det[AMRC_obj.t-1] = 1 # obj.t-1 because obj.t=t+1 now.
+            AMRC_obj.mistakes_idx_det[AMRC_obj.t] = 1 
             AMRC_obj.mistakes_det += 1
         if AMRC_obj.next_label() != AMRC_obj.predict(deterministic=False):
-            AMRC_obj.mistakes_idx_rnd[AMRC_obj.t-1] = 1
+            AMRC_obj.mistakes_idx_rnd[AMRC_obj.t] = 1
             AMRC_obj.mistakes_rnd += 1
     return
 
@@ -433,7 +461,7 @@ if __name__ == "__main__":
     print("hello world!")
     filename = "usenet1"
     X, Y = data_reader("./data/" + filename + ".mat")
-    myAMRC = reAMRC(X, Y, feature_map="RFF", order=1)
+    myAMRC = reAMRC(X, Y, feature_map="linear", order=1, normalized=False)
     x = X[0,:]
     y = Y[0,:]
     # fvec = myAMRC.feature_vector(x,y)
